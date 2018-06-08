@@ -13,6 +13,7 @@ import warnings
 from theano.compat import OrderedDict
 from theano.sandbox.rng_mrg import MRG_RandomStreams
 from theano import tensor as T
+from theano import pp
 
 from pylearn2.space import VectorSpace
 from pylearn2.costs.cost import Cost
@@ -26,6 +27,25 @@ from pylearn2.utils import block_gradient
 from pylearn2.utils import safe_zip
 from pylearn2.utils import serial
 from pylearn2.utils import sharedX
+
+def ensure_gradients(obj, params, all_params, grad_name):
+    # get gradients
+    grads = T.grad(obj, params)
+    all_grads = T.grad(obj, all_params)
+    grads_hat = all_grads[:len(params)]
+
+    # print random index gradient
+    rand_index = np.random.randint(len(grads_hat))
+    print '{}_grads[random index]'.format(grad_name), pp(grads[rand_index])
+    print '{}_grads_hat[random index]'.format(grad_name), pp(grads_hat[rand_index])
+
+    # ensure the equality
+    print 'Ensure the gradients for {} are the same'.format(grad_name)
+    assert all([pp(grad) == pp(grad_hat) for grad, grad_hat in zip(grads, grads_hat)])
+    print '{} gradients are the same'.format(grad_name)
+
+    # return all gradients
+    return all_grads
 
 class AdversaryPair(Model):
 
@@ -395,7 +415,29 @@ class AdversaryCost2(DefaultDataSpecsMixin, Cost):
         for param in d_params:
             assert param not in g_params
         d_grads = T.grad(d_obj, d_params)
+
+        # ensure the gradients for d are the same
+        d_all_grads = ensure_gradients(\
+            obj=d_obj,\
+            params=d_params,\
+            all_params=d_params + g_params,\
+            grad_name='d'\
+        )
+
         g_grads = T.grad(g_obj, g_params)
+
+        # ensure the gradients for g are the same
+        g_all_grads = ensure_gradients(\
+            obj=g_obj,\
+            params=g_params,\
+            all_params=g_params + d_params,\
+            grad_name='g'\
+        )
+
+        # ensure the grads lengths are the same
+        print 'Ensure the grads lengths are the same'
+        assert len(d_all_grads) == len(g_all_grads)
+        print 'Grads lengths are the same'
 
         if self.scale_grads:
             S_grad = T.grad(g_obj, S)
