@@ -28,11 +28,15 @@ from pylearn2.utils import safe_zip
 from pylearn2.utils import serial
 from pylearn2.utils import sharedX
 
-def ensure_gradients(obj, params, all_params, grad_name):
+def ensure_gradients(obj, params, all_params, grad_name, check_other_params=False):
     # get gradients
     grads = T.grad(obj, params)
     all_grads = T.grad(obj, all_params)
     grads_hat = all_grads[:len(params)]
+    other_grads = all_grads[len(params):]
+
+    # assert the length is consistent
+    assert len(all_grads) == len(grads_hat) + len(other_grads)
 
     # print random index gradient
     rand_index = np.random.randint(len(grads_hat))
@@ -43,6 +47,12 @@ def ensure_gradients(obj, params, all_params, grad_name):
     print 'Ensure the gradients for {} are the same'.format(grad_name)
     assert all([pp(grad) == pp(grad_hat) for grad, grad_hat in zip(grads, grads_hat)])
     print '{} gradients are the same'.format(grad_name)
+
+    # TODO
+    # check if other grads is valid
+    if check_other_params is True:
+        assert all([T.isinf(grad).eval() == False for grad in other_grads])
+        assert all([T.isnan(grad).eval() == False for grad in other_grads])
 
     # return all gradients
     return all_grads
