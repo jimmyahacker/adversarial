@@ -13,7 +13,7 @@ import warnings
 from theano.compat import OrderedDict
 from theano.sandbox.rng_mrg import MRG_RandomStreams
 from theano import tensor as T
-from theano import pp
+from theano import pp, gradient
 
 from pylearn2.space import VectorSpace
 from pylearn2.costs.cost import Cost
@@ -28,7 +28,19 @@ from pylearn2.utils import safe_zip
 from pylearn2.utils import serial
 from pylearn2.utils import sharedX
 
-def ensure_gradients(obj, params, all_params, grad_name, check_other_params=False):
+def ensure_gradients(obj, params, all_params, grad_name):
+    # assert that the params are contained in all_params
+    for param, param_hat in zip(params, all_params[:len(params)]):
+        assert param == param_hat
+    
+    # assert params are complete and not equal
+    other_params = all_params[len(params):]
+    assert len(params) + len(other_params) == len(all_params)
+    for other_param in other_params:
+        assert other_param not in params
+    for param in params:
+        assert param not in other_params
+
     # get gradients
     grads = T.grad(obj, params)
     all_grads = T.grad(obj, all_params)
@@ -38,21 +50,10 @@ def ensure_gradients(obj, params, all_params, grad_name, check_other_params=Fals
     # assert the length is consistent
     assert len(all_grads) == len(grads_hat) + len(other_grads)
 
-    # print random index gradient
-    rand_index = np.random.randint(len(grads_hat))
-    print '{}_grads[random index]'.format(grad_name), pp(grads[rand_index])
-    print '{}_grads_hat[random index]'.format(grad_name), pp(grads_hat[rand_index])
-
-    # ensure the equality
-    print 'Ensure the gradients for {} are the same'.format(grad_name)
+    # ensure the equality for grads and grads_hat
+    print 'Ensure {}_grads and {}_grads_hat are the same'.format(grad_name, grad_name)
     assert all([pp(grad) == pp(grad_hat) for grad, grad_hat in zip(grads, grads_hat)])
-    print '{} gradients are the same'.format(grad_name)
-
-    # TODO
-    # check if other grads is valid
-    if check_other_params is True:
-        assert all([T.isinf(grad).eval() == False for grad in other_grads])
-        assert all([T.isnan(grad).eval() == False for grad in other_grads])
+    print 'The same'
 
     # return all gradients
     return all_grads
@@ -375,12 +376,22 @@ class AdversaryCost2(DefaultDataSpecsMixin, Cost):
                                      self.discriminator_input_include_probs,
                                      self.discriminator_default_input_scale,
                                      self.discriminator_input_scales)
+        y_hat0_no_bp = d.dropout_fprop(gradient.disconnected_grad(S), self.discriminator_default_input_include_prob,
+                                     self.discriminator_input_include_probs,
+                                     self.discriminator_default_input_scale,
+                                     self.discriminator_input_scales)
         y_hat0 = d.dropout_fprop(S, self.discriminator_default_input_include_prob,
                                      self.discriminator_input_include_probs,
                                      self.discriminator_default_input_scale,
                                      self.discriminator_input_scales)
 
-        d_obj =  0.5 * (d.layers[-1].cost(y1, y_hat1) + d.layers[-1].cost(y0, y_hat0))
+        d_obj =  0.5 * (d.layers[-1].cost(y1, y_hat1) + d.layers[-1].cost(y0, y_hat0_no_bp))
+
+        # ensure g's gradients have no affect on d's gradient
+        d_obj_old =  0.5 * (d.layers[-1].cost(y1, y_hat1) + d.layers[-1].cost(y0, y_hat0))
+        print 'Ensure not include the g\'s gradients won\' affect d\' gradients'
+        assert pp(d_obj) == pp(d_obj_old)
+        print 'Assured'
 
         if self.no_drop_in_d_for_g:
             y_hat0_no_drop = d.dropout_fprop(S)
@@ -427,27 +438,27 @@ class AdversaryCost2(DefaultDataSpecsMixin, Cost):
         d_grads = T.grad(d_obj, d_params)
 
         # ensure the gradients for d are the same
-        d_all_grads = ensure_gradients(\
+        _ = ensure_gradients(\
             obj=d_obj,\
             params=d_params,\
-            all_params=d_params + g_params,\
+            all_params=d_params,\
             grad_name='d'\
         )
 
         g_grads = T.grad(g_obj, g_params)
 
         # ensure the gradients for g are the same
-        g_all_grads = ensure_gradients(\
+        _ = ensure_gradients(\
             obj=g_obj,\
             params=g_params,\
             all_params=g_params + d_params,\
             grad_name='g'\
         )
 
-        # ensure the grads lengths are the same
-        print 'Ensure the grads lengths are the same'
-        assert len(d_all_grads) == len(g_all_grads)
-        print 'Grads lengths are the same'
+        #################################################
+        # Can not ensure the grads lengths are the same #
+        # As we could not get g gradients from d's cost #
+        #################################################
 
         if self.scale_grads:
             S_grad = T.grad(g_obj, S)
