@@ -13,6 +13,7 @@ import warnings
 from theano.compat import OrderedDict
 from theano.sandbox.rng_mrg import MRG_RandomStreams
 from theano import tensor as T
+from theano import pp, gradient
 
 from pylearn2.space import VectorSpace
 from pylearn2.costs.cost import Cost
@@ -26,6 +27,36 @@ from pylearn2.utils import block_gradient
 from pylearn2.utils import safe_zip
 from pylearn2.utils import serial
 from pylearn2.utils import sharedX
+
+def ensure_gradients(obj, params, all_params, grad_name):
+    # assert that the params are contained in all_params
+    for param, param_hat in zip(params, all_params[:len(params)]):
+        assert param == param_hat
+    
+    # assert params are complete and not equal
+    other_params = all_params[len(params):]
+    assert len(params) + len(other_params) == len(all_params)
+    for other_param in other_params:
+        assert other_param not in params
+    for param in params:
+        assert param not in other_params
+
+    # get gradients
+    grads = T.grad(obj, params)
+    all_grads = T.grad(obj, all_params)
+    grads_hat = all_grads[:len(params)]
+    other_grads = all_grads[len(params):]
+
+    # assert the length is consistent
+    assert len(all_grads) == len(grads_hat) + len(other_grads)
+
+    # ensure the equality for grads and grads_hat
+    print 'Ensure {}_grads and {}_grads_hat are the same'.format(grad_name, grad_name)
+    assert all([pp(grad) == pp(grad_hat) for grad, grad_hat in zip(grads, grads_hat)])
+    print 'The same'
+
+    # return all gradients
+    return all_grads
 
 class AdversaryPair(Model):
 
@@ -345,12 +376,22 @@ class AdversaryCost2(DefaultDataSpecsMixin, Cost):
                                      self.discriminator_input_include_probs,
                                      self.discriminator_default_input_scale,
                                      self.discriminator_input_scales)
+        y_hat0_no_bp = d.dropout_fprop(gradient.disconnected_grad(S), self.discriminator_default_input_include_prob,
+                                     self.discriminator_input_include_probs,
+                                     self.discriminator_default_input_scale,
+                                     self.discriminator_input_scales)
         y_hat0 = d.dropout_fprop(S, self.discriminator_default_input_include_prob,
                                      self.discriminator_input_include_probs,
                                      self.discriminator_default_input_scale,
                                      self.discriminator_input_scales)
 
-        d_obj =  0.5 * (d.layers[-1].cost(y1, y_hat1) + d.layers[-1].cost(y0, y_hat0))
+        d_obj =  0.5 * (d.layers[-1].cost(y1, y_hat1) + d.layers[-1].cost(y0, y_hat0_no_bp))
+
+        # ensure g's gradients have no affect on d's gradient
+        d_obj_old =  0.5 * (d.layers[-1].cost(y1, y_hat1) + d.layers[-1].cost(y0, y_hat0))
+        print 'Ensure not include the g\'s gradients won\' affect d\' gradients'
+        assert pp(d_obj) == pp(d_obj_old)
+        print 'Assured'
 
         if self.no_drop_in_d_for_g:
             y_hat0_no_drop = d.dropout_fprop(S)
@@ -395,7 +436,29 @@ class AdversaryCost2(DefaultDataSpecsMixin, Cost):
         for param in d_params:
             assert param not in g_params
         d_grads = T.grad(d_obj, d_params)
+
+        # ensure the gradients for d are the same
+        _ = ensure_gradients(\
+            obj=d_obj,\
+            params=d_params,\
+            all_params=d_params,\
+            grad_name='d'\
+        )
+
         g_grads = T.grad(g_obj, g_params)
+
+        # ensure the gradients for g are the same
+        _ = ensure_gradients(\
+            obj=g_obj,\
+            params=g_params,\
+            all_params=g_params + d_params,\
+            grad_name='g'\
+        )
+
+        #################################################
+        # Can not ensure the grads lengths are the same #
+        # As we could not get g gradients from d's cost #
+        #################################################
 
         if self.scale_grads:
             S_grad = T.grad(g_obj, S)
